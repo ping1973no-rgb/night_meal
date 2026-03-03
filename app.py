@@ -104,32 +104,33 @@ with tab1:
 
 # --- [Tab 2: 관리자 데스크] ---
 with tab2:
-    # 오늘 데이터 가져오기
-    res = supabase.table("orders").select("*").eq("order_date", today_str).execute()
-    today_data = pd.DataFrame(res.data)
-    
-    if today_data.empty:
-        st.info("오늘 접수된 주문이 없습니다.")
-    else:
+    # 오늘 데이터 가져오기 (이미 가져온 res.data 사용)
+    if not today_data.empty:
         pending = today_data[today_data['status'] == '주문대기']
         if not pending.empty:
             st.markdown("#### ⏳ 확정 대기 목록")
             for res_name in pending['restaurant'].unique():
                 res_orders = pending[pending['restaurant'] == res_name]
-                with st.expander(f"📍 {res_name} (대기 {len(res_orders)}건)", expanded=True):
-                    order_count = len(res_orders)
-                    food_sum = res_orders['total_price'].sum()
-                    
-                    # 기존 배달비 로직 유지
-                    if res_name == '아말피': d_fee = 3000 if order_count == 1 else 4000
-                    elif res_name == '오르드브': d_fee = 2000 if order_count == 1 else 4000
-                    elif res_name == '장강': d_fee = 0
-                    else: d_fee = 4000
-                    if res_name == '오르드브' and food_sum >= 50000: d_fee = 0
-                    
-                    per_fee = d_fee // order_count
-                    st.write(f"💰 예상 배달비: 총 {d_fee:,}원 (1인당 {per_fee:,}원)")
-                    
+                
+                # --- 수정한 부분: 합계 계산을 안전하게 변경 ---
+                order_count = len(res_orders)
+                # 데이터가 숫자인지 확인하며 합계 계산
+                food_sum = pd.to_numeric(res_orders['total_price']).sum()
+                
+                # 배달비 로직 (기존 유지)
+                if res_name == '아말피': d_fee = 3000 if order_count == 1 else 4000
+                elif res_name == '오르드브': d_fee = 2000 if order_count == 1 else 4000
+                elif res_name == '장강': d_fee = 0
+                else: d_fee = 4000
+                
+                # 에러가 났던 지점: food_sum을 숫자로 확실히 비교
+                if res_name == '오르드브' and int(food_sum) >= 50000: 
+                    d_fee = 0
+                # ------------------------------------------
+                
+                per_fee = d_fee // order_count
+                st.write(f"💰 예상 배달비: 총 {d_fee:,}원 (1인당 {per_fee:,}원)")
+                   
                     to_action = []
                     for _, row in res_orders.iterrows():
                         if st.checkbox(f"{row['user_name']} | {row['items']} ({row['total_price']:,}원)", key=f"chk_{row['id']}"):
@@ -188,3 +189,4 @@ with tab3:
         st.table(pd.DataFrame(hist_res.data))
     else:
         st.write("해당 날짜의 기록이 없습니다.")
+
