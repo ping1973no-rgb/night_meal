@@ -35,6 +35,13 @@ today_str = today.strftime('%Y-%m-%d')
 st.title('🍱 인천생활과학고 "밥먹고 초근하자"')
 st.markdown(f"### 📅 오늘은 **{today_str}** 입니다.")
 
+# --- 중요: 앱이 실행될 때마다 최신 데이터를 DB에서 가져오기 ---
+def get_today_data():
+    res = supabase.table("orders").select("*").eq("order_date", today_str).execute()
+    return pd.DataFrame(res.data)
+
+today_data = get_today_data()
+
 tab1, tab2, tab3 = st.tabs(["🍴 맛있는 주문", "📋 관리자 데스크", "📜 지난 기록"])
 
 # --- [Tab 1: 주문하기] ---
@@ -69,14 +76,13 @@ with tab1:
             selected_display = st.multiselect("📝 메뉴 선택", menu_options)
             
             if selected_display and st.button("🚀 주문 확정하기", type="primary", use_container_width=True):
-                # 16:30 시간 체크 로직
                 now = datetime.datetime.now()
                 limit_time = now.replace(hour=16, minute=30, second=0)
                 
                 if now > limit_time:
-                    st.error("🚫 16:30 이후에는 시스템 주문이 불가합니다. 전화로 문의하세요.")
+                    st.error("🚫 16:30 이후에는 시스템 주문이 불가합니다.")
                 else:
-                    # 중복 체크 (Supabase 조회)
+                    # 중복 체크
                     existing = supabase.table("orders").select("*")\
                         .eq("order_date", today_str).eq("user_name", user_name).execute()
                     
@@ -99,46 +105,43 @@ with tab1:
                         supabase.table("orders").insert(order_data).execute()
                         st.balloons()
                         st.success(f"✅ {user_name}님, 주문 완료!")
-                        time.sleep(1.5)
+                        time.sleep(1)
                         st.rerun()
 
 # --- [Tab 2: 관리자 데스크] ---
 with tab2:
-    # 오늘 데이터 가져오기 (이미 가져온 res.data 사용)
-    if not today_data.empty:
+    # 탭을 누를 때마다 최신 데이터 다시 로드
+    today_data = get_today_data()
+    
+    if today_data.empty:
+        st.info("오늘 접수된 주문이 없습니다.")
+    else:
         pending = today_data[today_data['status'] == '주문대기']
         if not pending.empty:
             st.markdown("#### ⏳ 확정 대기 목록")
             for res_name in pending['restaurant'].unique():
                 res_orders = pending[pending['restaurant'] == res_name]
-                
-                # --- 수정한 부분: 합계 계산을 안전하게 변경 ---
                 order_count = len(res_orders)
-                # 데이터가 숫자인지 확인하며 합계 계산
                 food_sum = pd.to_numeric(res_orders['total_price']).sum()
                 
-                # 배달비 로직 (기존 유지)
-                if res_name == '아말피': d_fee = 3000 if order_count == 1 else 4000
-                elif res_name == '오르드브': d_fee = 2000 if order_count == 1 else 4000
-                elif res_name == '장강': d_fee = 0
-                else: d_fee = 4000
-                
-                # 에러가 났던 지점: food_sum을 숫자로 확실히 비교
-                if res_name == '오르드브' and int(food_sum) >= 50000: 
-                    d_fee = 0
-                # ------------------------------------------
-                
-                per_fee = d_fee // order_count
-                st.write(f"💰 예상 배달비: 총 {d_fee:,}원 (1인당 {per_fee:,}원)")
-                   
+                with st.expander(f"📍 {res_name} (대기 {order_count}건)", expanded=True):
+                    if res_name == '아말피': d_fee = 3000 if order_count == 1 else 4000
+                    elif res_name == '오르드브': d_fee = 2000 if order_count == 1 else 4000
+                    elif res_name == '장강': d_fee = 0
+                    else: d_fee = 4000
+                    if res_name == '오르드브' and int(food_sum) >= 50000: d_fee = 0
+                    
+                    per_fee = d_fee // order_count
+                    st.write(f"💰 예상 배달비: 총 {d_fee:,}원 (1인당 {per_fee:,}원)")
+                    
                     to_action = []
                     for _, row in res_orders.iterrows():
                         if st.checkbox(f"{row['user_name']} | {row['items']} ({row['total_price']:,}원)", key=f"chk_{row['id']}"):
                             to_action.append(row['id'])
                     
-                    col_b1, col_b2 = st.columns(2)
-                    with col_b1:
-                        if st.button(f"✅ {res_name} 선택 확정", key=f"conf_{res_name}"):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button(f"✅ {res_name} 확정", key=f"conf_{res_name}"):
                             if to_action:
                                 done_batches = today_data[today_data['status']=='주문완료']['batch_id'].unique()
                                 b_id = f"{len(done_batches)+1}차({res_name})"
@@ -146,19 +149,16 @@ with tab2:
                                     row_data = res_orders[res_orders['id'] == tid].iloc[0]
                                     over = max(0, (int(row_data['total_price']) + per_fee) - 9000)
                                     supabase.table("orders").update({
-                                        "status": "주문완료",
-                                        "batch_id": b_id,
-                                        "delivery_fee": int(per_fee),
-                                        "over_price": int(over)
+                                        "status": "주문완료", "batch_id": b_id,
+                                        "delivery_fee": int(per_fee), "over_price": int(over)
                                     }).eq("id", tid).execute()
                                 st.rerun()
-                    with col_b2:
-                        if st.button(f"🗑️ {res_name} 선택 삭제", key=f"del_{res_name}"):
+                    with c2:
+                        if st.button(f"🗑️ {res_name} 삭제", key=f"del_{res_name}"):
                             for tid in to_action:
                                 supabase.table("orders").delete().eq("id", tid).execute()
                             st.rerun()
 
-        # 확정 내역 출력
         done = today_data[today_data['status'] == '주문완료']
         if not done.empty:
             st.divider()
@@ -166,27 +166,18 @@ with tab2:
             for batch in sorted(done['batch_id'].unique()):
                 st.markdown(f"#### 🏷️ {batch}")
                 batch_df = done[done['batch_id'] == batch].copy()
-                display_df = batch_df[['department', 'user_name', 'items', 'total_price', 'delivery_fee', 'over_price']]
-                display_df.columns = ['부서', '성함', '메뉴', '음식값', '배달비', '개인부담금']
-                st.table(display_df)
-                total_sum = batch_df['total_price'].sum() + batch_df['delivery_fee'].sum()
-                st.caption(f"💰 {batch} 총결제액: {total_sum:,}원")
+                st.table(batch_df[['department', 'user_name', 'items', 'total_price', 'delivery_fee', 'over_price']])
 
-    # 데이터 백업
     st.divider()
-    st.subheader("📥 데이터 백업")
-    all_res = supabase.table("orders").select("*").order("order_date", desc=True).execute()
-    if all_res.data:
-        full_df = pd.DataFrame(all_res.data)
-        csv_data = full_df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 전체 주문 내역 CSV 다운로드", data=csv_data, file_name=f"orders_backup_{today_str}.csv", mime="text/csv")
+    if st.button("🔄 데이터 강제 새로고침"):
+        st.rerun()
 
 # --- [Tab 3: 지난 기록] ---
 with tab3:
     search_date = st.date_input("날짜 선택", today)
-    hist_res = supabase.table("orders").select("*").eq("order_date", str(search_date)).eq("status", "주문완료").execute()
+    hist_res = supabase.table("orders").select("*").eq("order_date", str(search_date)).execute()
     if hist_res.data:
-        st.table(pd.DataFrame(hist_res.data))
+        st.write(f"### 📅 {search_date} 전체 내역")
+        st.dataframe(pd.DataFrame(hist_res.data))
     else:
         st.write("해당 날짜의 기록이 없습니다.")
-
